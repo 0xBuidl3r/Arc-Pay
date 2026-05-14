@@ -1,19 +1,10 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { useState } from "react";
 import { useAccount, useSwitchChain } from "wagmi";
 import { ARC_CHAIN } from "@/lib/wagmi";
 import { useWallet } from "@/context/WalletContext";
-
-declare global {
-  interface Window {
-    ethereum?: {
-      request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-      isMetaMask?: boolean;
-    };
-  }
-}
 
 interface AddARCButtonProps {
   variant?: "primary" | "secondary" | "inline";
