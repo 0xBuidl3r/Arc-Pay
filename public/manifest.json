@@ -1,0 +1,37 @@
+{
+  "name": "ARC Pay",
+  "short_name": "ARC Pay",
+  "description": "Premium USDC payments on the ARC blockchain",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/arcpay.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/arcpay.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "orientation": "portrait-primary",
+  "categories": ["finance", "utilities"],
+  "shortcuts": [
+    {
+      "name": "Create Payment",
+      "url": "/#payment-generator",
+      "description": "Create a new USDC payment link"
+    },
+    {
+      "name": "Activity",
+      "url": "/activity",
+      "description": "View your payment history"
+    }
+  ]
+}
