@@ -90,9 +90,9 @@ export async function getPaymentById(id: string): Promise<Payment | null> {
 
 export async function updatePayment(id: string, input: UpdatePaymentInput): Promise<Payment | null> {
   const updateData: Record<string, unknown> = {};
-  
-  if (input.status) updateData.status = input.status;
-  if (input.tx_hash) updateData.tx_hash = input.tx_hash;
+
+  if (input.status !== undefined) updateData.status = input.status;
+  if (input.tx_hash !== undefined) updateData.tx_hash = input.tx_hash;
   if (input.payer_wallet) updateData.payer_wallet = input.payer_wallet;
   if (input.paid_at) updateData.paid_at = input.paid_at;
 

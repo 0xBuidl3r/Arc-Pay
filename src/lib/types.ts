@@ -20,7 +20,7 @@ export interface CreatePaymentInput {
 
 export interface UpdatePaymentInput {
   status?: PaymentStatus;
-  tx_hash?: string;
+  tx_hash?: string | null;
   payer_wallet?: string;
   paid_at?: string;
 }
