@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import { useParams } from "next/navigation";
 import { Suspense, useState, useEffect, useCallback, useRef } from "react";
-import { useAccount, useChainId, useSwitchChain, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
+import { useAccount, useChainId, useSwitchChain, useWriteContract } from "wagmi";
 import { Navbar } from "@/components/sections/Navbar";
 import { Footer } from "@/components/sections/Footer";
 import { CopyButton } from "@/components/ui/CopyButton";
@@ -16,8 +16,9 @@ import { ShareModal } from "@/components/ui/ShareModal";
 import { PaymentNotFoundEmptyState } from "@/components/ui/EmptyState";
 import { ReceiptSkeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
-import { getPaymentById, updatePayment, markPaymentAsCompleted, markPaymentAsFailed } from "@/lib/payments";
+import { getPaymentById, updatePayment, markPaymentAsCompleted, markPaymentAsFailed, markPaymentAsProcessing } from "@/lib/payments";
 import { openXShare, generatePremiumCaption, copyCaptionToClipboard } from "@/lib/social";
+import { useTransactionConfirmation } from "@/lib/useTransactionConfirmation";
 import type { Payment } from "@/lib/types";
 import { ARC_CHAIN, USDC_CONTRACT_ADDRESS, erc20Abi } from "@/lib/wagmi";
 
@@ -58,6 +59,7 @@ function PaymentPageContent() {
   const { downloadAsPng } = useFlashcardDownload();
   const hasCompletedRef = useRef(false);
   const hasFailedRef = useRef(false);
+  const txSavedRef = useRef(false);
 
   const isOnARC = chainId === ARC_CHAIN.id;
 
@@ -69,12 +71,8 @@ function PaymentPageContent() {
     reset: resetWrite 
   } = useWriteContract();
 
-  const { 
-    isLoading: isConfirming, 
-    isSuccess: isConfirmed 
-  } = useWaitForTransactionReceipt({
-    hash: txData,
-  });
+  const txHashForPolling = payment?.tx_hash || txData;
+  const confirmation = useTransactionConfirmation(txHashForPolling || null);
 
   const fetchPayment = useCallback(async () => {
     if (!paymentId) {
@@ -83,16 +81,19 @@ function PaymentPageContent() {
     }
 
     const fetchedPayment = await getPaymentById(paymentId);
-    
+
     if (!fetchedPayment) {
       setPhase("notfound");
       return;
     }
 
+    console.log("Payment fetched from Supabase:", fetchedPayment);
+
     setPayment(fetchedPayment);
     hasCompletedRef.current = false;
     hasFailedRef.current = false;
-    
+    txSavedRef.current = false;
+
     switch (fetchedPayment.status) {
       case "completed":
         setPhase("completed");
@@ -101,37 +102,78 @@ function PaymentPageContent() {
         setPhase("failed");
         break;
       case "processing":
-        setPhase("processing");
+        if (fetchedPayment.tx_hash) {
+          console.log("Payment is processing with txHash, verifying via explorer...");
+          const { checkTxOnExplorer } = await import("@/lib/explorer");
+          const explorerResult = await checkTxOnExplorer(fetchedPayment.tx_hash);
+          if (explorerResult.confirmed) {
+            console.log("Explorer confirms tx, marking completed");
+            const updated = await markPaymentAsCompleted(fetchedPayment.id);
+            if (updated) {
+              setPayment(updated);
+              hasCompletedRef.current = true;
+              setPhase("completed");
+              showToast("Payment confirmed!", "success");
+            } else {
+              setPhase("processing");
+            }
+          } else {
+            setPhase("processing");
+          }
+        } else {
+          setPhase("processing");
+        }
         break;
       default:
         setPhase("pending");
     }
-  }, [paymentId]);
+  }, [paymentId, showToast]);
 
   useEffect(() => {
     fetchPayment();
   }, [fetchPayment]);
 
   useEffect(() => {
-    if (txData && payment && payment.status === "pending") {
+    if (txData && payment && payment.status === "pending" && !txSavedRef.current) {
+      txSavedRef.current = true;
+      console.log("Transaction submitted, saving txHash to Supabase:", txData);
+      
+      markPaymentAsProcessing(payment.id, txData, walletAddress || "").then((updated) => {
+        if (updated) {
+          console.log("txHash saved to Supabase:", updated);
+          setPayment(updated);
+        }
+      });
+      
       setPhase("processing");
       setPayment(prev => prev ? { ...prev, status: "processing" } : null);
     }
-  }, [txData, payment]);
+  }, [txData, payment, walletAddress]);
 
   useEffect(() => {
-    if (isConfirmed && txData && payment && !hasCompletedRef.current) {
+    if (confirmation.isConfirmed && payment && !hasCompletedRef.current) {
       hasCompletedRef.current = true;
+      console.log("Transaction confirmed by blockchain, updating Supabase...");
       
       markPaymentAsCompleted(payment.id).then((updated) => {
         if (updated) {
+          console.log("Payment marked as completed in Supabase:", updated);
           setPayment(updated);
           setPhase("completed");
           showToast("Payment completed successfully!", "success");
         }
       });
     }
-  }, [isConfirmed, txData, payment, showToast]);
+  }, [confirmation.isConfirmed, payment, showToast]);
+
+  useEffect(() => {
+    if (confirmation.error && payment && !hasFailedRef.current) {
+      if (confirmation.error.includes("timeout")) {
+        hasFailedRef.current = true;
+        showToast("Transaction confirmation timeout. Please check your wallet.", "warning");
+      }
+    }
+  }, [confirmation.error, payment, showToast]);
 
   useEffect(() => {
     if (writeError && payment && !hasFailedRef.current) {
@@ -184,22 +226,13 @@ function PaymentPageContent() {
 
   const handleRetry = () => {
     if (!payment) return;
-    updatePayment(payment.id, { status: "pending" });
+    updatePayment(payment.id, { status: "pending", tx_hash: null });
     setPhase("pending");
-    setPayment((prev) => prev ? { ...prev, status: "pending" } : null);
+    setPayment((prev) => prev ? { ...prev, status: "pending", tx_hash: null } : null);
     hasCompletedRef.current = false;
     hasFailedRef.current = false;
+    txSavedRef.current = false;
     resetWrite();
-  };
-
-  const handleShareOnX = () => {
-    if (!payment) return;
-    openXShare({
-      amount: payment.amount,
-      recipient: payment.recipient,
-      txHash: payment.tx_hash || undefined,
-      note: payment.note || undefined,
-    }, 'premium');
   };
 
   const handleCopyCaption = async () => {
@@ -220,6 +253,16 @@ function PaymentPageContent() {
     }
   };
 
+  const handleShareOnX = () => {
+    if (!payment) return;
+    openXShare({
+      amount: payment.amount,
+      recipient: payment.recipient,
+      txHash: payment.tx_hash || undefined,
+      note: payment.note || undefined,
+    }, 'premium');
+  };
+
   const shareCaption = payment ? generatePremiumCaption({
     amount: payment.amount,
     recipient: payment.recipient,
@@ -227,7 +270,7 @@ function PaymentPageContent() {
     note: payment.note || undefined,
   }) : '';
 
-  const isPayable = payment?.status === "pending" || payment?.status === "processing";
+  const isPayable = payment?.status === "pending";
   const paymentUrl = payment ? `${typeof window !== 'undefined' ? window.location.origin : ''}/pay/${payment.id}` : "";
 
   if (phase === "loading") {
@@ -345,29 +388,38 @@ function PaymentPageContent() {
                       </div>
                     </div>
 
-                    {payment.tx_hash && (
+                    {payment.tx_hash && payment.tx_hash !== 'null' && payment.tx_hash !== 'undefined' && (
                       <div className="bg-white/5 rounded-xl p-4 mb-6 border border-white/5">
                         <div className="text-xs text-white/30 uppercase tracking-wider mb-2">Transaction Hash</div>
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-cyan-400 font-mono text-sm truncate">
                             {payment.tx_hash}
                           </span>
-                          <CopyButton text={payment.tx_hash} />
+                          <CopyButton text={payment.tx_hash} label="Copy Hash" successMessage="Hash copied to clipboard!" />
                         </div>
                       </div>
                     )}
 
-                    <a
-                      href={`https://testnet.arcscan.app/tx/${payment.tx_hash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all duration-200 mb-4"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                      View on ARC Explorer
-                    </a>
+                    {payment.tx_hash && payment.tx_hash !== 'null' && payment.tx_hash !== 'undefined' ? (
+                      <a
+                        href={`https://testnet.arcscan.app/tx/${payment.tx_hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all duration-200 mb-4"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                        View on ARC Explorer
+                      </a>
+                    ) : (
+                      <div className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-white/5 border border-white/10 text-white/40 mb-4">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        Awaiting transaction confirmation...
+                      </div>
+                    )}
                   </div>
 
                   <div className="h-1 bg-gradient-to-r from-transparent via-green-500/50 to-transparent" />
@@ -415,6 +467,9 @@ function PaymentPageContent() {
     );
   }
 
+  const isConfirming = phase === "processing" || confirmation.isConfirming;
+  const canPay = isPayable && isConnected && isOnARC && !isWritePending && !isSubmitting;
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex flex-col">
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
@@ -438,11 +493,15 @@ function PaymentPageContent() {
                   <PaymentStatusBadge status={payment.status} size="lg" />
                 </div>
                 <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">
-                  {payment.status === "failed" ? "Payment Failed" : "USDC Payment Request"}
+                  {payment.status === "failed" ? "Payment Failed" : 
+                   payment.status === "processing" ? "Confirming Payment" :
+                   "USDC Payment Request"}
                 </h1>
                 <p className="text-white/50">
                   {isConnected 
-                    ? payment.status === "pending" ? "Review and confirm the payment" : ""
+                    ? payment.status === "pending" ? "Review and confirm the payment" 
+                    : payment.status === "processing" ? "Please wait while we confirm on ARC..."
+                    : ""
                     : "Connect wallet to view payment details"}
                 </p>
               </motion.div>
@@ -506,21 +565,21 @@ function PaymentPageContent() {
                       whileHover={{ scale: isSubmitting ? 1 : 1.02 }}
                       whileTap={{ scale: isSubmitting ? 1 : 0.98 }}
                       onClick={handlePay}
-                      disabled={!isConnected || !isOnARC || isWritePending || isConfirming || isSubmitting}
+                      disabled={!canPay}
                       className={`w-full py-4 rounded-2xl font-semibold text-lg shadow-lg transition-all duration-300 ${
-                        !isConnected || !isOnARC || isWritePending || isConfirming || isSubmitting
+                        !canPay
                           ? "bg-white/20 text-white/40 cursor-not-allowed"
                           : "bg-gradient-to-r from-cyan-500 to-cyan-400 text-black shadow-cyan-500/30 hover:shadow-cyan-500/40 hover:from-cyan-400 hover:to-cyan-300"
                       }`}
                     >
-                      {isWritePending || isConfirming ? (
+                      {isWritePending ? (
                         <span className="flex items-center justify-center gap-2">
                           <motion.div
                             animate={{ rotate: 360 }}
                             transition={{ duration: 1, repeat: Infinity }}
                             className="w-5 h-5 rounded-full border-2 border-current border-t-transparent"
                           />
-                          {isWritePending ? "Waiting for wallet..." : "Confirming on ARC..."}
+                          Waiting for wallet...
                         </span>
                       ) : !isConnected ? (
                         "Connect Wallet to Pay"
@@ -555,7 +614,7 @@ function PaymentPageContent() {
                 </motion.div>
               )}
 
-              {(isWritePending || isConfirming) && (
+              {isConfirming && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -568,9 +627,16 @@ function PaymentPageContent() {
                       className="w-5 h-5 rounded-full border-2 border-cyan-400 border-t-transparent"
                     />
                     <span className="text-cyan-400 font-medium">
-                      {isWritePending ? "Waiting for wallet..." : "Confirming USDC on ARC..."}
+                      {isWritePending ? "Waiting for wallet..." : "Confirming on ARC..."}
                     </span>
                   </div>
+                  {confirmation.attempts > 0 && (
+                    <p className="text-white/30 text-xs mt-2">
+                      {confirmation.source === "explorer"
+                        ? `Verifying on explorer (${confirmation.attempts})`
+                        : `Attempt ${confirmation.attempts}/5`}
+                    </p>
+                  )}
                 </motion.div>
               )}
 

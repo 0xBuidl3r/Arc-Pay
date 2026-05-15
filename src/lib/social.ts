@@ -1,19 +1,17 @@
 export interface ShareOptions {
   amount: string;
   recipient: string;
-  txHash?: string;
+  txHash?: string | null;
   note?: string;
-}
-
-export interface CaptionStyle {
-  premium: string;
-  minimal: string;
-  ecosystem: string;
 }
 
 function formatAddress(address: string): string {
   if (!address) return '';
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function isValidTxHash(txHash: string | null | undefined): txHash is string {
+  return Boolean(txHash && txHash !== 'null' && txHash !== 'undefined' && txHash.length > 0);
 }
 
 export function generatePremiumCaption(options: ShareOptions): string {
@@ -32,7 +30,7 @@ export function generatePremiumCaption(options: ShareOptions): string {
 
   lines.push(`to ${truncatedRecipient}`);
 
-  if (txHash) {
+  if (isValidTxHash(txHash)) {
     lines.push('');
     lines.push('Verified on ARC Explorer:');
     lines.push(`testnet.arcscan.app/tx/${txHash}`);
@@ -51,7 +49,7 @@ export function generateMinimalCaption(options: ShareOptions): string {
   const lines: string[] = [];
   lines.push(`Paid ${amount} USDC on ARC ⚡`);
 
-  if (txHash) {
+  if (isValidTxHash(txHash)) {
     lines.push(`testnet.arcscan.app/tx/${txHash}`);
   }
 
@@ -74,7 +72,7 @@ export function generateEcosystemCaption(options: ShareOptions): string {
   lines.push('');
   lines.push('Stablecoin payments, made simple.');
   
-  if (txHash) {
+  if (isValidTxHash(txHash)) {
     lines.push(`tx: testnet.arcscan.app/tx/${txHash}`);
   }
   
@@ -125,8 +123,15 @@ export function copyCaptionToClipboard(options: ShareOptions, style: 'premium' |
   return navigator.clipboard.writeText(caption).then(() => true).catch(() => false);
 }
 
-export function getExplorerUrl(txHash: string): string {
+export function getExplorerUrl(txHash: string | null | undefined): string {
+  if (!isValidTxHash(txHash)) {
+    return '';
+  }
   return `https://testnet.arcscan.app/tx/${txHash}`;
+}
+
+export function isValidExplorerUrl(txHash: string | null | undefined): boolean {
+  return isValidTxHash(txHash);
 }
 
 export function getARCPayUrl(paymentId: string): string {
